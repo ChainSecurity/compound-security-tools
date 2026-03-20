@@ -35,6 +35,12 @@ const TOKEN_INFO_CACHE_DIR = join(CACHE_DIR, "token-info-cache");
 // Etherscan V2 base (unified across chains)
 const ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api";
 
+// Fallback explorer APIs (Blockscout, etc.) for chains where contracts
+// may be verified on an alternative explorer but not on Etherscan.
+const FALLBACK_EXPLORER_APIS: Record<number, string> = {
+  130: "https://unichain.blockscout.com/api", // Unichain
+};
+
 const GOVERNOR_MIN_ABI: JsonFragment[] = [
   {
     inputs: [{ internalType: "uint256", name: "proposalId", type: "uint256" }],
@@ -74,6 +80,60 @@ function tokenInfoCachePathFor(address: string, chainId = 1): string {
   return join(cacheDir, `${checksum(address)}.json`);
 }
 
+
+/**
+ * Try fetching an ABI from a fallback explorer (e.g., Blockscout) for chains
+ * where contracts may not be verified on Etherscan.
+ * If found, overwrites the cache so subsequent calls are fast.
+ */
+async function tryFallbackAbi(address: string, chainId: number): Promise<Interface | null> {
+  const baseUrl = FALLBACK_EXPLORER_APIS[chainId];
+  if (!baseUrl) return null;
+
+  const checksumAddr = checksum(address);
+  const url = `${baseUrl}?module=contract&action=getabi&address=${checksumAddr}`;
+  try {
+    logger.debug({ address: checksumAddr, chainId }, "Trying fallback explorer for ABI");
+    const resp = await axios.get(url, { timeout: 15000 });
+    if (resp.data?.status === "1" && resp.data?.result) {
+      const abiJson = JSON.parse(resp.data.result);
+      // Overwrite the cache with the real ABI
+      const path = cachePathFor(address, chainId);
+      writeFileSync(path, JSON.stringify(abiJson, null, 2));
+      logger.debug({ address: checksumAddr, chainId }, "ABI found via fallback explorer");
+      return new Interface(abiJson as JsonFragment[]);
+    }
+  } catch (err) {
+    logger.debug({ address: checksumAddr, chainId, err }, "Fallback explorer ABI fetch failed");
+  }
+  return null;
+}
+
+/**
+ * Try fetching a contract name from a fallback explorer (e.g., Blockscout).
+ * If found, overwrites the cache.
+ */
+async function tryFallbackContractName(address: string, chainId: number): Promise<string | null> {
+  const baseUrl = FALLBACK_EXPLORER_APIS[chainId];
+  if (!baseUrl) return null;
+
+  const checksumAddr = checksum(address);
+  const url = `${baseUrl}?module=contract&action=getsourcecode&address=${checksumAddr}`;
+  try {
+    logger.debug({ address: checksumAddr, chainId }, "Trying fallback explorer for contract name");
+    const resp = await axios.get(url, { timeout: 15000 });
+    if (resp.data?.status === "1" && Array.isArray(resp.data?.result) && resp.data.result[0]?.ContractName) {
+      const name = resp.data.result[0].ContractName as string;
+      const path = nameCachePathFor(address, chainId);
+      writeFileSync(path, JSON.stringify({ name, source: "fallback-explorer" }));
+      logger.debug({ address: checksumAddr, chainId, name }, "Contract name found via fallback explorer");
+      return name;
+    }
+  } catch (err) {
+    logger.debug({ address: checksumAddr, chainId, err }, "Fallback explorer contract name fetch failed");
+  }
+  return null;
+}
 
 export function getProviderFor(chainId: number): JsonRpcProvider {
   const url = getRpcUrl(chainId);
@@ -119,6 +179,9 @@ export async function getAbiFor(address: string, chainId?: number): Promise<Inte
       const raw = readFileSync(path, "utf8");
       const parsed = JSON.parse(raw);
       if (parsed?.__note === "unverified_or_missing" || parsed?.__note === "unsupported_chain") {
+        // Try fallback explorer (e.g., Blockscout)
+        const fallbackAbi = await tryFallbackAbi(address, chainId ?? 1);
+        if (fallbackAbi) return fallbackAbi;
         // Try local ABI fallback for known contracts
         const localAbi = getLocalAbiFor(address, chainId ?? 1);
         if (localAbi) {
@@ -159,8 +222,10 @@ export async function getAbiFor(address: string, chainId?: number): Promise<Inte
         typeof result === "string" &&
         /Missing|unsupported chainid/i.test(result)
       ) {
-        // Chain not supported by Etherscan V2 - try local ABI fallback
+        // Chain not supported by Etherscan V2 - try fallback explorer, then local ABI
         logger.debug({ address, chainId }, "Chain not supported by Etherscan V2");
+        const fallbackAbi = await tryFallbackAbi(address, chainId ?? 1);
+        if (fallbackAbi) return fallbackAbi;
         writeFileSync(path, JSON.stringify({ __note: "unsupported_chain" }, null, 2));
         const localAbi = getLocalAbiFor(address, chainId ?? 1);
         if (localAbi) {
@@ -169,8 +234,10 @@ export async function getAbiFor(address: string, chainId?: number): Promise<Inte
         }
         return null;
       } else {
-        // unverified or other failure - try local ABI fallback
+        // unverified or other failure - try fallback explorer, then local ABI
         logger.debug({ address, chainId }, "Contract not verified on Etherscan");
+        const fallbackAbi = await tryFallbackAbi(address, chainId ?? 1);
+        if (fallbackAbi) return fallbackAbi;
         writeFileSync(path, JSON.stringify({ __note: "unverified_or_missing" }, null, 2));
         const localAbi = getLocalAbiFor(address, chainId ?? 1);
         if (localAbi) {
@@ -203,7 +270,9 @@ export async function getContractName(address: string, chainId?: number): Promis
         logger.debug({ address, chainId }, "Contract name cache hit");
         return parsed.name;
       }
-      // Cache has null - try comet-metadata fallback
+      // Cache has null - try fallback explorer, then comet-metadata
+      const fallbackName = await tryFallbackContractName(address, chainId ?? 1);
+      if (fallbackName) return fallbackName;
       const cometLabel = getCometContractLabel(chainId ?? 1, address);
       if (cometLabel) {
         logger.debug({ address, chainId, cometLabel }, "Using comet-metadata for cached null contract name");
@@ -254,8 +323,10 @@ export async function getContractName(address: string, chainId?: number): Promis
         typeof resp.data?.result === "string" &&
         /Missing|unsupported chainid/i.test(resp.data.result)
       ) {
-        // Chain not supported by Etherscan V2 - try comet-metadata fallback
+        // Chain not supported by Etherscan V2 - try fallback, then comet-metadata
         logger.debug({ address, chainId }, "Chain not supported by Etherscan V2 for contract name");
+        const fallbackName = await tryFallbackContractName(address, chainId ?? 1);
+        if (fallbackName) return fallbackName;
         const cometLabel = getCometContractLabel(chainId ?? 1, address);
         if (cometLabel) {
           logger.debug({ address, chainId, cometLabel }, "Using comet-metadata for contract name");
@@ -277,8 +348,10 @@ export async function getContractName(address: string, chainId?: number): Promis
     }
   }
 
-  // Cache sentinel for not found - try comet-metadata fallback
+  // Cache sentinel for not found - try fallback explorer, then comet-metadata
   logger.debug({ address, chainId }, "Contract name not found on Etherscan");
+  const fallbackName = await tryFallbackContractName(address, chainId ?? 1);
+  if (fallbackName) return fallbackName;
   const cometLabel = getCometContractLabel(chainId ?? 1, address);
   if (cometLabel) {
     logger.debug({ address, chainId, cometLabel }, "Using comet-metadata for contract name");
@@ -428,6 +501,7 @@ const TOKEN_INFO_CACHE_VERSION = 3;
 const EXPLORER_BASE_URLS: Record<number, string> = {
   1: "https://etherscan.io",
   10: "https://optimistic.etherscan.io",
+  130: "https://uniscan.xyz",
   137: "https://polygonscan.com",
   5000: "https://mantlescan.xyz",
   8453: "https://basescan.org",
@@ -634,6 +708,15 @@ export async function getAbiForWithSource(
       const raw = readFileSync(path, "utf8");
       const parsed = JSON.parse(raw);
       if (parsed?.__note === "unverified_or_missing" || parsed?.__note === "unsupported_chain") {
+        // Try fallback explorer (e.g., Blockscout)
+        const fallbackAbi = await tryFallbackAbi(address, cid);
+        if (fallbackAbi) {
+          const baseUrl = FALLBACK_EXPLORER_APIS[cid];
+          return {
+            iface: fallbackAbi,
+            source: externalApiSource("blockscout", `${baseUrl}?module=contract&action=getabi&address=${checksumAddr}`),
+          };
+        }
         // Try local ABI fallback
         const localAbi = getLocalAbiFor(address, cid);
         if (localAbi) {
@@ -675,6 +758,14 @@ export async function getAbiForWithSource(
         await sleep(1000 * (attempt + 1));
         continue;
       } else if (status === "0" && typeof result === "string" && /Missing|unsupported chainid/i.test(result)) {
+        const fallbackAbi = await tryFallbackAbi(address, cid);
+        if (fallbackAbi) {
+          const baseUrl = FALLBACK_EXPLORER_APIS[cid];
+          return {
+            iface: fallbackAbi,
+            source: externalApiSource("blockscout", `${baseUrl}?module=contract&action=getabi&address=${checksumAddr}`),
+          };
+        }
         writeFileSync(path, JSON.stringify({ __note: "unsupported_chain" }, null, 2));
         const localAbi = getLocalAbiFor(address, cid);
         if (localAbi) {
@@ -686,6 +777,14 @@ export async function getAbiForWithSource(
         }
         return null;
       } else {
+        const fallbackAbi = await tryFallbackAbi(address, cid);
+        if (fallbackAbi) {
+          const baseUrl = FALLBACK_EXPLORER_APIS[cid];
+          return {
+            iface: fallbackAbi,
+            source: externalApiSource("blockscout", `${baseUrl}?module=contract&action=getabi&address=${checksumAddr}`),
+          };
+        }
         writeFileSync(path, JSON.stringify({ __note: "unverified_or_missing" }, null, 2));
         const localAbi = getLocalAbiFor(address, cid);
         if (localAbi) {
@@ -742,7 +841,12 @@ export async function getContractNameWithSource(
           return sourced(parsed.name, etherscanSourcecodeSource(cid, checksumAddr, true));
         }
       }
-      // Cache has null - try comet-metadata fallback
+      // Cache has null - try fallback explorer, then comet-metadata
+      const fallbackName = await tryFallbackContractName(address, cid);
+      if (fallbackName) {
+        const baseUrl = FALLBACK_EXPLORER_APIS[cid];
+        return sourced(fallbackName, externalApiSource("blockscout", `${baseUrl}?module=contract&action=getsourcecode&address=${checksumAddr}`));
+      }
       const cometLabel = getCometContractLabel(cid, address);
       if (cometLabel) {
         // Update cache with correct source
@@ -778,6 +882,11 @@ export async function getContractNameWithSource(
       } else if (resp.data?.message === "NOTOK" && typeof resp.data?.result === "string" && /Invalid API Key/i.test(resp.data.result)) {
         throw new Error(`Invalid Etherscan API key.`);
       } else if (status === "0" && typeof resp.data?.result === "string" && /Missing|unsupported chainid/i.test(resp.data.result)) {
+        const fallbackName = await tryFallbackContractName(address, cid);
+        if (fallbackName) {
+          const baseUrl = FALLBACK_EXPLORER_APIS[cid];
+          return sourced(fallbackName, externalApiSource("blockscout", `${baseUrl}?module=contract&action=getsourcecode&address=${checksumAddr}`));
+        }
         const cometLabel = getCometContractLabel(cid, address);
         if (cometLabel) {
           writeFileSync(path, JSON.stringify({ name: cometLabel, source: "comet-metadata" }));
@@ -800,7 +909,12 @@ export async function getContractNameWithSource(
     }
   }
 
-  // Fallback to comet-metadata
+  // Fallback to fallback explorer, then comet-metadata
+  const fallbackName = await tryFallbackContractName(address, cid);
+  if (fallbackName) {
+    const baseUrl = FALLBACK_EXPLORER_APIS[cid];
+    return sourced(fallbackName, externalApiSource("blockscout", `${baseUrl}?module=contract&action=getsourcecode&address=${checksumAddr}`));
+  }
   const cometLabel = getCometContractLabel(cid, address);
   if (cometLabel) {
     writeFileSync(path, JSON.stringify({ name: cometLabel, source: "comet-metadata" }));

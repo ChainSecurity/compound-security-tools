@@ -57,7 +57,11 @@
     "linea": {
       "chainId": 59144,
       "rpcUrl": "https://linea.gateway.tenderly.co/<your-api-key>",
-      "directory": "linea"
+      "directory": "linea",
+      "timelockAddress": "0x4A900f81dEdA753bbBab12453b3775D5f26df6F3",
+      "bridge": "0xd19d4B5d358258f05D7B411E21A1460D11B0876F",
+      "receiver": "0x1F71901daf98d70B4BAF40DE080321e5C2676856",
+      "l2msgsender": "0x508Ca82Df566dCD1B0DE8296e70a96332cD644ec"
     },
     "polygon": {
       "chainId": 137,
@@ -67,7 +71,10 @@
     "unichain": {
       "chainId": 130,
       "rpcUrl": "https://unichain.rpc.example.com",
-      "directory": "unichain"
+      "directory": "unichain",
+      "bridge": "0x9A3D64E386C18Cb1d6d5179a9596A4B5736e98A6",
+      "receiver": "0x4b5DeE60531a72C1264319Ec6A22678a4D0C8118",
+      "l2msgsender": "0x4200000000000000000000000000000000000007"
     },
     "ronin": {
       "chainId": 2020,

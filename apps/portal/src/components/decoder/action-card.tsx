@@ -48,6 +48,7 @@ function getExplorerUrl(address: string, chainId: number): string {
   const explorers: Record<number, string> = {
     1: "https://etherscan.io",
     10: "https://optimistic.etherscan.io",
+    130: "https://uniscan.xyz",
     137: "https://polygonscan.com",
     2020: "https://app.roninchain.com",
     5000: "https://mantlescan.xyz",
