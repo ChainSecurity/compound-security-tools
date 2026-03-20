@@ -51,6 +51,10 @@ RUN chown -R nextjs:nodejs .snapshots
 RUN mkdir -p /.snapshots
 RUN chown -R nextjs:nodejs /.snapshots
 
+# Create tenderly testnets file with correct permissions
+# The simulator writes testnet RPC URLs here after creating virtual testnets
+RUN echo '{}' > .tenderly-testnets.json && chown nextjs:nodejs .tenderly-testnets.json
+
 # Automatically leverage output traces to reduce image size
 COPY --from=builder --chown=nextjs:nodejs /app/apps/portal/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/apps/portal/.next/static ./apps/portal/.next/static

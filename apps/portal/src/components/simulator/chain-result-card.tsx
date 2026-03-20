@@ -5,7 +5,7 @@ import { ChevronDown, ChevronRight, Globe, Fuel, ExternalLink, AlertTriangle } f
 import { Badge } from "@/components/ui/badge";
 import { TransactionExecution } from "./transaction-execution";
 
-import { getChainName, getChainColor } from "@/lib/chains";
+import { getChainName, getChainColor, getChainTxGasLimit } from "@/lib/chains";
 import type { SerializedChainExecutionResult } from "@/types/simulator";
 
 interface ChainResultCardProps {
@@ -83,6 +83,7 @@ export function ChainResultCard({ result, defaultExpanded = true }: ChainResultC
 
   const chainName = getChainName(result.chainId);
   const chainColor = getChainColor(result.chainId);
+  const txGasLimit = getChainTxGasLimit(result.chainId);
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
@@ -132,6 +133,17 @@ export function ChainResultCard({ result, defaultExpanded = true }: ChainResultC
               <div className="flex items-center gap-2 text-sm text-slate-500">
                 <Fuel className="w-4 h-4" />
                 <span>{formatGas(result.totalGasUsed)}</span>
+                {txGasLimit && (
+                  <span className="text-slate-400" title={`Tx gas limit: ${txGasLimit.toLocaleString()}`}>
+                    / {(txGasLimit / 1_000_000)}M
+                  </span>
+                )}
+              </div>
+            )}
+            {!result.totalGasUsed && txGasLimit && (
+              <div className="flex items-center gap-2 text-sm text-slate-400" title={`Tx gas limit: ${txGasLimit.toLocaleString()}`}>
+                <Fuel className="w-4 h-4" />
+                <span>Limit: {(txGasLimit / 1_000_000)}M</span>
               </div>
             )}
             {result.rpcUrl && isTenderlyUrl(result.rpcUrl) && (

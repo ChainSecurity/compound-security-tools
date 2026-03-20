@@ -6,7 +6,7 @@ A CLI tool for simulating Compound governance proposals. Supports two simulation
 - **Tenderly** (default): Cloud simulation using Tenderly virtual testnets - fast block advancement
 - **Anvil**: Local simulation using Foundry's Anvil - works with any public RPC
 
-Supports mainnet and L2 chains (Arbitrum, Scroll, Optimism, Base, Mantle).
+Supports mainnet and L2 chains (Arbitrum, Scroll, Optimism, Base, Mantle, Linea, Unichain).
 
 ## Key Files
 

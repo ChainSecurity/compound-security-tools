@@ -447,9 +447,10 @@ export async function simulateL2(
 
     // Set cross-chain message sender (xDomainMessageSender) so the bridge receiver
     // accepts the call as coming from the L1 timelock.
-    // OP-Stack chains (Optimism, Base, Mantle) store xDomainMsgSender at slot 0xcc (204).
+    // OP-Stack chains (Optimism, Base, Mantle, Unichain) store xDomainMsgSender at slot 0xcc (204).
     // Scroll has a different contract (L2ScrollMessenger) with xDomainMessageSender at slot 0xc9 (201).
-    if (["base", "optimism", "mantle"].includes(chain)) {
+    // Linea L2MessageService stores _messageSender at slot 0x115 (277).
+    if (["base", "optimism", "mantle", "unichain"].includes(chain)) {
         logger.step("Setting cross-chain message sender");
         await backend.setStorageAt(
             chain,
@@ -463,6 +464,14 @@ export async function simulateL2(
             chain,
             alias,
             "0x00000000000000000000000000000000000000000000000000000000000000c9",
+            "0x0000000000000000000000006d903f6003cca6255D85CcA4D3B5E5146dC33925"
+        );
+    } else if (chain === "linea") {
+        logger.step("Setting cross-chain message sender");
+        await backend.setStorageAt(
+            chain,
+            alias,
+            "0x0000000000000000000000000000000000000000000000000000000000000115",
             "0x0000000000000000000000006d903f6003cca6255D85CcA4D3B5E5146dC33925"
         );
     }

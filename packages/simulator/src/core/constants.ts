@@ -8,6 +8,8 @@ import {
     optimismBridgeABI,
     baseBridgeABI,
     mantleBridgeABI,
+    lineaBridgeABI,
+    unichainBridgeABI,
 } from "../abis";
 
 /**
@@ -29,6 +31,8 @@ export const bridgeABIs: Record<string, unknown[]> = {
     optimism: optimismBridgeABI,
     base: baseBridgeABI,
     mantle: mantleBridgeABI,
+    linea: lineaBridgeABI,
+    unichain: unichainBridgeABI,
 };
 
 /**
@@ -43,6 +47,8 @@ export const messageIndex: Record<string, number> = {
     optimism: 1,
     base: 1,
     mantle: 1,
+    linea: 2,
+    unichain: 1,
 };
 
 /**
