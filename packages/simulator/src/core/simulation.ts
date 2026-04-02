@@ -482,11 +482,30 @@ export async function simulateL2(
 
     // Impersonate and send the bridged message
     await backend.impersonateAccount(chain, alias);
-    await backend.sendTransaction(chain, {
-        from: alias,
-        to: chainConfig.receiver!,
-        data: message,
-    });
+
+    if (chain === "polygon") {
+        // Polygon uses FxPortal: FxChild calls processMessageFromRoot on the receiver
+        // instead of the fallback-based pattern used by OP-stack chains.
+        const processMessageIface = new Interface([
+            "function processMessageFromRoot(uint256 stateId, address rootMessageSender, bytes data)",
+        ]);
+        const encodedCall = processMessageIface.encodeFunctionData("processMessageFromRoot", [
+            0,
+            config.chains.mainnet.timelockAddress,
+            message,
+        ]);
+        await backend.sendTransaction(chain, {
+            from: alias,
+            to: chainConfig.receiver!,
+            data: encodedCall,
+        });
+    } else {
+        await backend.sendTransaction(chain, {
+            from: alias,
+            to: chainConfig.receiver!,
+            data: message,
+        });
+    }
 
     const gracePeriod = Number(await timelock.GRACE_PERIOD());
     logger.step(`Advancing time by ${gracePeriod.toLocaleString()} seconds`);

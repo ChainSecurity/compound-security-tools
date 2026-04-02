@@ -137,6 +137,7 @@ export function detectL2Chains(proposal: Proposal): string[] {
         else if (target === config.chains.mantle?.bridge) chains.push("mantle");
         else if (target === config.chains.linea?.bridge) chains.push("linea");
         else if (target === config.chains.unichain?.bridge) chains.push("unichain");
+        else if (target === config.chains.polygon?.bridge) chains.push("polygon");
         else if (isCCIPTarget(target)) {
             const chain = ccipTargetToL2Chain(proposal.calldatas[i]!);
             if (chain) chains.push(chain);
@@ -156,6 +157,7 @@ export function targetToL2Chain(target: string): string | undefined {
     if (target === config.chains.mantle?.bridge) return "mantle";
     if (target === config.chains.linea?.bridge) return "linea";
     if (target === config.chains.unichain?.bridge) return "unichain";
+    if (target === config.chains.polygon?.bridge) return "polygon";
     return undefined;
 }
 
