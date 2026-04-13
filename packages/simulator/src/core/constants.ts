@@ -10,6 +10,7 @@ import {
     mantleBridgeABI,
     lineaBridgeABI,
     unichainBridgeABI,
+    polygonBridgeABI,
 } from "../abis";
 
 /**
@@ -33,6 +34,7 @@ export const bridgeABIs: Record<string, unknown[]> = {
     mantle: mantleBridgeABI,
     linea: lineaBridgeABI,
     unichain: unichainBridgeABI,
+    polygon: polygonBridgeABI,
 };
 
 /**
@@ -49,6 +51,7 @@ export const messageIndex: Record<string, number> = {
     mantle: 1,
     linea: 2,
     unichain: 1,
+    polygon: 1,
 };
 
 /**

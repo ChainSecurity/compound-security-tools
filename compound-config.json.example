@@ -66,7 +66,10 @@
     "polygon": {
       "chainId": 137,
       "rpcUrl": "https://polygon.gateway.tenderly.co/<your-api-key>",
-      "directory": "polygon"
+      "directory": "polygon",
+      "bridge": "0xfe5e5D361b2ad62c541bAb87C45a0B9B018389a2",
+      "receiver": "0x18281dfC4d00905DA1aaA6731414EABa843c468A",
+      "l2msgsender": "0x8397259c983751DAf40400790063935a11afa28a"
     },
     "unichain": {
       "chainId": 130,
