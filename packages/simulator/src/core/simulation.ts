@@ -449,7 +449,7 @@ export async function simulateL2(
     // accepts the call as coming from the L1 timelock.
     // OP-Stack chains (Optimism, Base, Mantle, Unichain) store xDomainMsgSender at slot 0xcc (204).
     // Scroll has a different contract (L2ScrollMessenger) with xDomainMessageSender at slot 0xc9 (201).
-    // Linea L2MessageService stores _messageSender at slot 0x115 (277).
+    // Linea uses claimMessage flow (see below).
     if (["base", "optimism", "mantle", "unichain"].includes(chain)) {
         logger.step("Setting cross-chain message sender");
         await backend.setStorageAt(
@@ -466,14 +466,6 @@ export async function simulateL2(
             "0x00000000000000000000000000000000000000000000000000000000000000c9",
             "0x0000000000000000000000006d903f6003cca6255D85CcA4D3B5E5146dC33925"
         );
-    } else if (chain === "linea") {
-        logger.step("Setting cross-chain message sender");
-        await backend.setStorageAt(
-            chain,
-            alias,
-            "0x0000000000000000000000000000000000000000000000000000000000000115",
-            "0x0000000000000000000000006d903f6003cca6255D85CcA4D3B5E5146dC33925"
-        );
     }
 
     const iface = new Interface(bridgeABIs[chain] as ethers.InterfaceAbi);
@@ -483,7 +475,69 @@ export async function simulateL2(
     // Impersonate and send the bridged message
     await backend.impersonateAccount(chain, alias);
 
-    if (chain === "polygon") {
+    if (chain === "linea") {
+        // Linea L2MessageService V6 uses EIP-1153 transient storage for _messageSender,
+        // so we cannot override it via setStorageAt. Instead, we call claimMessage() on
+        // the L2MessageService which sets TRANSIENT_MESSAGE_SENDER within the same tx.
+        //
+        // Steps:
+        // 1. Compute the message hash matching claimMessage's expectation
+        // 2. Set inboxL1L2MessageStatus[hash] = 1 (RECEIVED) in storage
+        // 3. Call claimMessage, which sets transient sender and calls the receiver
+        const _from = config.chains.mainnet.timelockAddress;
+        const _to = bridgeCall!.args[0];    // receiver address
+        const _fee = bridgeCall!.args[1];   // fee
+        const _value = 0;
+        const _nonce = 999999999;           // arbitrary unused nonce
+        const _calldata = message;          // the bridged calldata
+
+        // Message hash = keccak256(abi.encode(_from, _to, _fee, _value, _nonce, _calldata))
+        const messageHash = ethers.keccak256(
+            AbiCoder.defaultAbiCoder().encode(
+                ["address", "address", "uint256", "uint256", "uint256", "bytes"],
+                [_from, _to, _fee, _value, _nonce, _calldata]
+            )
+        );
+
+        // inboxL1L2MessageStatus mapping is at base slot 0xb0 (176)
+        // Storage slot for mapping key = keccak256(abi.encode(key, baseSlot))
+        const INBOX_STATUS_MAPPING_SLOT = 0xb0;
+        const statusSlot = ethers.keccak256(
+            AbiCoder.defaultAbiCoder().encode(
+                ["bytes32", "uint256"],
+                [messageHash, INBOX_STATUS_MAPPING_SLOT]
+            )
+        );
+
+        logger.step("Anchoring message hash in L2MessageService");
+        // Set status to INBOX_STATUS_RECEIVED (1)
+        await backend.setStorageAt(
+            chain,
+            alias,
+            statusSlot,
+            "0x0000000000000000000000000000000000000000000000000000000000000001"
+        );
+
+        // Call claimMessage on L2MessageService
+        logger.step("Claiming message via L2MessageService");
+        const claimMessageIface = new Interface([
+            "function claimMessage(address _from, address _to, uint256 _fee, uint256 _value, address payable _feeRecipient, bytes _calldata, uint256 _nonce)",
+        ]);
+        const claimCalldata = claimMessageIface.encodeFunctionData("claimMessage", [
+            _from,
+            _to,
+            _fee,
+            _value,
+            ethers.ZeroAddress,
+            _calldata,
+            _nonce,
+        ]);
+        await backend.sendTransaction(chain, {
+            from: alias,
+            to: alias, // claimMessage is called on the L2MessageService itself
+            data: claimCalldata,
+        });
+    } else if (chain === "polygon") {
         // Polygon uses FxPortal: FxChild calls processMessageFromRoot on the receiver
         // instead of the fallback-based pattern used by OP-stack chains.
         const processMessageIface = new Interface([
