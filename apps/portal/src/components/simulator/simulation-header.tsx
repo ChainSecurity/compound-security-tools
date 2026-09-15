@@ -75,7 +75,7 @@ export function SimulationHeader({ result }: SimulationHeaderProps) {
           <span className="text-sm font-medium text-slate-500">Chains</span>
         </div>
         <div className="text-2xl font-bold text-slate-900">
-          {result.chainResults.length}
+          {new Set(result.chainResults.filter((r) => !r.chain.includes("→")).map((r) => r.chainId)).size}
         </div>
       </div>
     </div>

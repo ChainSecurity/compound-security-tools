@@ -43,7 +43,9 @@
       "rpcUrl": "https://scroll-mainnet.gateway.tenderly.co/<your-api-key>",
       "directory": "scroll",
       "timelockAddress": "0xF6013e80E9e6AC211Cc031ad1CE98B3Aa20b73E4",
-      "bridge": "0x6774Bcbd5ceCeF1336b5300fb5186a12DDD8b367"
+      "bridge": "0x6774Bcbd5ceCeF1336b5300fb5186a12DDD8b367",
+      "receiver": "0xC6bf5A64896D679Cf89843DbeC6c0f5d3C9b610D",
+      "l2msgsender": "0x781e90f1c8Fc4611c9b7497C3B47F99Ef6969CbC"
     },
     "mantle": {
       "chainId": 5000,

@@ -81,6 +81,7 @@ export const lineaBridgeReceiverHandler: Handler = {
             target,
             valueWei,
             rawCalldata,
+            sigHint: signature && signature.length > 0 ? signature : undefined,
           }
         )
       );

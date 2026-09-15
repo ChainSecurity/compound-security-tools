@@ -37,7 +37,7 @@ import {
   handlerSource,
   proposalParameterSource,
 } from "./types/sources.js";
-import { Registry } from "./registry.js";
+import { Registry, type SiblingCalls } from "./registry.js";
 import { lineaBridgeHandler } from "./handlers/linea-bridge-handler.js";
 import { lineaBridgeReceiverHandler } from "./handlers/linea-receiver-handler.js";
 import { scrollBridgeHandler } from "./handlers/scroll-bridge-handler.js";
@@ -55,6 +55,11 @@ import { assetConfigInsightsHandler } from "./handlers/asset-config-insights.js"
 import { addressVerificationHandler } from "./handlers/address-verification-handler.js";
 import { cometConfiguratorPriceFeedInsightsHandler } from "./handlers/comet-configurator-price-feed-insights.js";
 import { cometTrackingSpeedHandler } from "./handlers/comet-tracking-speed-handler.js";
+import { cometProxyAdminHandler } from "./handlers/comet-proxy-admin-handler.js";
+import { timelockControllerHandler } from "./handlers/timelock-controller-handler.js";
+import { safeExecTransactionHandler } from "./handlers/safe-exec-transaction-handler.js";
+import { cometFactoryVersionHandler } from "./handlers/comet-factory-version-handler.js";
+import { cometExtensionDelegateHandler } from "./handlers/comet-extension-delegate-handler.js";
 import { getCometContractLabel } from "./lib/comet-metadata.js";
 
 // ---------------------- Constants ----------------------
@@ -75,11 +80,16 @@ const registry = new Registry().use([
   polygonReceiverHandler,
   ccipRouterHandler,
   ccipReceiverHandler,
+  timelockControllerHandler,
+  safeExecTransactionHandler,
   cometConfiguratorInsightsHandler,
   assetConfigInsightsHandler,
+  cometProxyAdminHandler,
   addressVerificationHandler,
   cometConfiguratorPriceFeedInsightsHandler,
   cometTrackingSpeedHandler,
+  cometFactoryVersionHandler,
+  cometExtensionDelegateHandler,
 ]);
 
 // ---------------------- Small helpers ----------------------
@@ -478,7 +488,13 @@ function pickArgs(
  * - Recurses into children with their own chainId
  */
 async function decodeActionCall(
-  ctx: { chainId: number; options?: DecoderOptions; actionIndex?: number },
+  ctx: {
+    chainId: number;
+    options?: DecoderOptions;
+    actionIndex?: number;
+    sigHint?: string;
+    siblings?: SiblingCalls | undefined;
+  },
   target: string,
   value: bigint,
   data: string
@@ -486,6 +502,8 @@ async function decodeActionCall(
   const chainId = ctx.chainId;
   const options = ctx.options;
   const actionIndex = ctx.actionIndex ?? 0;
+  const sigHint = ctx.sigHint;
+  const siblings = ctx.siblings;
   const trackSources = options?.trackSources ?? false;
   const targetCS = checksum(target);
   logger.debug({ chainId, target, value, data, trackSources }, "Decoding action call");
@@ -585,8 +603,38 @@ async function decodeActionCall(
     }
   }
 
+  // Fallback: if the target ABI couldn't be fetched (e.g. Etherscan rate limit or an
+  // unverified contract), but the call data carried a canonical signature hint
+  // (Compound governance batches embed it), build a minimal Interface from the hint so
+  // the function still decodes. This makes inner bridge/multicall decoding deterministic
+  // and independent of remote ABI availability.
+  if (!iface && sigHint) {
+    try {
+      iface = new Interface([`function ${sigHint}`]);
+      abiSource = handlerSource("embedded-signature", `Signature from call data: ${sigHint}`);
+      logger.debug({ target: targetCS, sigHint }, "Using embedded signature hint for ABI");
+    } catch (err) {
+      logger.debug({ sigHint, err }, "Failed to build interface from signature hint");
+    }
+  }
+
   if (iface) {
-    const decoded = decodeWithInterface(iface, data, options, abiSource);
+    let decoded = decodeWithInterface(iface, data, options, abiSource);
+    // If the fetched ABI didn't contain this selector but we have an embedded
+    // signature hint, retry with an interface derived from the hint.
+    if (!decoded && sigHint) {
+      try {
+        const hintIface = new Interface([`function ${sigHint}`]);
+        decoded = decodeWithInterface(
+          hintIface,
+          data,
+          options,
+          handlerSource("embedded-signature", `Signature from call data: ${sigHint}`)
+        );
+      } catch (err) {
+        logger.debug({ sigHint, err }, "Failed to decode with signature hint");
+      }
+    }
     if (decoded) {
       node.decoded = decoded;
       const sigValue = typeof decoded.signature === "object" ? decoded.signature.value : decoded.signature;
@@ -614,6 +662,7 @@ async function decodeActionCall(
     target: targetCS,
     valueWei: value,
     rawCalldata: data,
+    siblings,
     parsed: node.decoded
       ? {
           iface: iface as Interface,
@@ -632,9 +681,21 @@ async function decodeActionCall(
   if (expansion.children.length) {
     logger.debug({ count: expansion.children.length }, "Expanding children");
     node.children = [];
-    for (const cr of expansion.children) {
+    // A bridged payload is itself an ordered, atomic batch, so children get the
+    // same sibling view the top-level actions do.
+    const childCalls = expansion.children.map((cr) => ({
+      chainId: cr.nodeInput.chainId,
+      target: cr.nodeInput.target,
+      rawCalldata: cr.nodeInput.rawCalldata,
+    }));
+    for (const [childIndex, cr] of expansion.children.entries()) {
       const childNode = await decodeActionCall(
-        { chainId: cr.nodeInput.chainId, options }, // Pass options to recursive calls
+        {
+          chainId: cr.nodeInput.chainId,
+          options, // Pass options to recursive calls
+          sigHint: cr.nodeInput.sigHint,
+          siblings: { index: childIndex, calls: childCalls },
+        },
         cr.nodeInput.target,
         cr.nodeInput.valueWei ?? 0n,
         cr.nodeInput.rawCalldata
@@ -825,9 +886,16 @@ export async function decodeProposalFromDetails(
   }
 
   const calls: CallNode[] = [];
+  // Every action sees the whole action list, so a handler can account for state
+  // an earlier action in this same proposal rewrites before its call runs.
+  const siblingCalls = targets.map((target, i) => ({
+    chainId,
+    target: target!,
+    rawCalldata: calldatas[i]!,
+  }));
   for (let i = 0; i < targets.length; i++) {
     const node = await decodeActionCall(
-      { chainId, options, actionIndex: i },
+      { chainId, options, actionIndex: i, siblings: { index: i, calls: siblingCalls } },
       targets[i]!,
       values[i]!,
       calldatas[i]!

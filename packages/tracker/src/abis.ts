@@ -54,7 +54,7 @@ export const ccipBridgeABI = [
  * Emitted by: Optimism CDM, Base CDM, Mantle CDM, Unichain CDM.
  */
 export const l1CdmEventABI = [
-  "event SentMessage(address indexed target, address sender, bytes message, uint256 messageNonce, uint32 gasLimit)",
+  "event SentMessage(address indexed target, address sender, bytes message, uint256 messageNonce, uint256 gasLimit)",
 ];
 
 /**

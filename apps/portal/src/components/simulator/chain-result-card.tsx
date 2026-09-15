@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Globe, Fuel, ExternalLink, AlertTriangle } from "lucide-react";
+import { ChevronDown, ChevronRight, Globe, ArrowLeftRight, Fuel, ExternalLink, AlertTriangle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { TransactionExecution } from "./transaction-execution";
 
@@ -11,6 +11,10 @@ import type { SerializedChainExecutionResult } from "@/types/simulator";
 interface ChainResultCardProps {
   result: SerializedChainExecutionResult;
   defaultExpanded?: boolean;
+  /** Override the chain name shown in the card header (e.g. "Base → Ethereum" for relay results) */
+  displayName?: string;
+  /** True for L2→L1 relay results — shows a relay icon and badge instead of the chain globe */
+  isRelay?: boolean;
 }
 
 /** 14,000,000 — transactions exceeding this on Ethereum are getting close to block limits */
@@ -78,11 +82,11 @@ function isTenderlyUrl(rpcUrl: string): boolean {
   }
 }
 
-export function ChainResultCard({ result, defaultExpanded = true }: ChainResultCardProps) {
+export function ChainResultCard({ result, defaultExpanded = true, displayName, isRelay = false }: ChainResultCardProps) {
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
 
-  const chainName = getChainName(result.chainId);
-  const chainColor = getChainColor(result.chainId);
+  const chainName = displayName ?? getChainName(result.chainId);
+  const chainColor = isRelay ? "purple" : getChainColor(result.chainId);
   const txGasLimit = getChainTxGasLimit(result.chainId);
 
   return (
@@ -105,7 +109,10 @@ export function ChainResultCard({ result, defaultExpanded = true }: ChainResultC
 
             {/* Chain icon */}
             <div className={`w-10 h-10 rounded-xl ${getChainBgColor(chainColor)} flex items-center justify-center`}>
-              <Globe className={`w-5 h-5 ${getChainTextColor(chainColor)}`} />
+              {isRelay
+                ? <ArrowLeftRight className={`w-5 h-5 ${getChainTextColor(chainColor)}`} />
+                : <Globe className={`w-5 h-5 ${getChainTextColor(chainColor)}`} />
+              }
             </div>
 
             {/* Chain name and status */}
@@ -115,6 +122,11 @@ export function ChainResultCard({ result, defaultExpanded = true }: ChainResultC
                 <Badge variant={result.success ? "green" : "orange"} className="text-xs">
                   {result.success ? "Success" : "Failed"}
                 </Badge>
+                {isRelay && (
+                  <Badge variant="purple" className="text-xs">
+                    Relay
+                  </Badge>
+                )}
                 {result.persisted && (
                   <Badge variant="gray" className="text-xs">
                     Persisted

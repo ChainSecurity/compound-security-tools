@@ -246,6 +246,57 @@ Anvil processes are ephemeral:
 - Always check `receipt.status` after `waitForTransaction()`
 - Use `eth_call` to get the revert reason if status is 0
 
+### Ethers `.wait()` Resolves the Wrong Receipt Against Anvil
+
+**Problem**: With a burst of sequential transactions against Anvil's instant mining (one
+block per tx), `ethers` v6 `signer.sendTransaction(...).wait()` was observed resolving a
+*different* transaction's receipt — reporting `status: 0`, `gasUsed: 48254` for a
+`Safe.approveHash` call that had actually succeeded. The tell: the sender's balance delta
+was exactly `52784 × gasPrice`, matching the real (successful) gas cost rather than the
+48254 in the receipt, and the state change (`ApproveHash` event, approval readable
+on-chain) was present. Re-sending the identical call with `cast send --unlocked` returned
+`status: 0x1`.
+
+**Solution**: For fork harnesses that fire many transactions in sequence, skip
+`.wait()` and poll raw:
+
+```typescript
+const hash = await p.send("eth_sendTransaction", [{ from, gas: "0x1e8480", ...tx }]);
+let r = null;
+for (let i = 0; i < 120 && !r; i++) {
+  r = await p.send("eth_getTransactionReceipt", [hash]);
+  if (!r) await new Promise((res) => setTimeout(res, 250));
+}
+if (r.transactionHash.toLowerCase() !== hash.toLowerCase()) throw new Error("receipt mismatch");
+if (BigInt(r.status) !== 1n) { /* eth_call to get the reason */ }
+```
+
+Assert `receipt.transactionHash === hash` — that check is what turns this class of bug
+from a silent false failure into a loud one. Note raw JSON-RPC needs **hex quantities**:
+`value: "0"` from a Safe bundle JSON must become `ethers.toBeHex(BigInt(tx.value))`.
+
+**Key insight**: A false *failure* is as expensive as a false pass. When a fork
+simulation reports a revert, cross-check the sender's balance delta against
+`gasUsed × gasPrice` before believing it — they disagree exactly when the receipt does
+not belong to the transaction you sent.
+
+### Driving a Real Safe in a Fork Test
+
+To execute a bundle through the actual multisig rather than by impersonating it:
+- Encode the bundle as MultiSend calldata (`00` + `to` + `value(32)` + `len(32)` + `data`
+  per leg) and call `execTransaction(MultiSend, 0, data, operation=1 /* DELEGATECALL */, …)`.
+  MultiSend 1.4.1 is at `0x38869bf66a61cF6bDB996A6aE40D5853Fd43B526`.
+- Use **approved-hash signatures** (`r = owner`, `s = 0`, `v = 1`) after having each owner
+  call `approveHash(txHash)` — no private keys needed. Signatures must be concatenated in
+  **ascending owner address** order.
+- **Filter owners to EOAs.** A transaction cannot originate from a contract address, so a
+  contract owner (which would sign via EIP-1271 on mainnet) cannot be impersonated to call
+  `approveHash`. The TMC multisig has one such owner. Pick `threshold` EOA owners instead;
+  the Safe accepts any `threshold` of them.
+- With `safeTxGas == 0 && gasPrice == 0`, Safe **reverts the whole `execTransaction`** when
+  the inner call fails (`GS013`) instead of emitting `ExecutionFailure` — so a bundle bug
+  surfaces as a top-level revert, not a status-1 tx with a failure event.
+
 ### Anvil Block Advancement Limitations
 
 Anvil cannot fast-forward block numbers like Tenderly:
@@ -276,6 +327,41 @@ Anvil cannot fast-forward block numbers like Tenderly:
 
 **Problem**: Anvil rejects transactions with "intrinsic gas too high" when config gas exceeds block gas limit.
 **Solution**: Use reasonable gas values in config (e.g., `0x1C9C380` = 30M) rather than extremely high values. Don't modify block gas limit as this can cause other issues.
+
+### EIP-7825 Transaction Gas Cap
+
+**Problem**: A proposal needing more than 2^24 = 16,777,216 gas cannot be executed on mainnet
+at all (EIP-7825, Fusaka), but the simulator reported SUCCESS for exactly such a proposal (596).
+Two independent reasons:
+
+1. The mainnet `execute` was sent with **no `gas` field**, so Anvil auto-estimated a limit —
+   above the cap — and the transaction succeeded. Anvil only enforces the cap when given
+   `--enable-tx-gas-limit`, which the backend does not pass.
+2. We compared **`receipt.gasUsed`** against the cap. That is the wrong quantity: the cap
+   constrains the transaction's gas *limit*. `gasUsed` is reported net of EIP-3529 refunds and
+   excludes the 1/64 reserves EIP-150 requires to be *present* in the limit at each nested call
+   but which are never spent.
+
+For proposal 596 the two numbers differ by 438,341 gas: `gasUsed` = 16,638,642 (looks like it
+fits, 0.83% under the cap) while the minimum viable limit is 16,638,642 + refunds + reserves =
+**17,076,983** — 299,767 *over* the cap. Pinned at exactly the cap the execution fails, consuming
+16,340,995 with ~436k stranded in unusable 1/64 reserve.
+
+**Solution**: `src/core/gas.ts` calls `eth_estimateGas` before executing (its binary search *is*
+the minimum-viable-limit computation) and compares that against `EIP7825_TX_GAS_CAP`. The mainnet
+`execute` is then sent with a hard `MAX_MAINNET_TX_GAS` = cap − 262,144 buffer, so near-cap
+proposals fail in simulation rather than on-chain. The gas requirement is surfaced as the
+`revertReason` since an out-of-gas failure carries no revert data.
+
+**Key insight**: You cannot derive the required gas limit from `receipt.gasUsed` — the receipt
+contains neither the refund counter nor the call-tree geometry. `gasUsed ≤ gross ≤ 1.25 × gasUsed`
+is the only bound available from a receipt, far too loose to decide a ~300k overage. Ask the node
+via `eth_estimateGas`, or walk a `debug_traceTransaction` bottom-up.
+
+**Scope note**: only the mainnet `execute` is capped. `propose` is deliberately left uncapped —
+resubmitting the proposal is a harness artifact (needed for voting power), not a transaction
+mainnet has to fit, and for large proposals it writes ~25KB to storage, which is itself near
+the cap.
 
 ### Non-Existent Proposal Detection
 

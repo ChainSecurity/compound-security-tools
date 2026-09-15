@@ -39,6 +39,7 @@ const ETHERSCAN_V2_BASE = "https://api.etherscan.io/v2/api";
 // may be verified on an alternative explorer but not on Etherscan.
 const FALLBACK_EXPLORER_APIS: Record<number, string> = {
   130: "https://unichain.blockscout.com/api", // Unichain
+  534352: "https://scrollscan.com/api", // Scroll (not supported by Etherscan V2)
 };
 
 const GOVERNOR_MIN_ABI: JsonFragment[] = [

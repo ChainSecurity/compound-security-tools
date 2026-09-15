@@ -5,6 +5,7 @@ import { checksum } from "@/utils";
 import { insight, type Handler, type InsightRequest } from "@/registry";
 import { logger } from "@/logger";
 import { handlerSource, staticMetadataSource } from "@/types/sources";
+import { isVerifiedProxyAdmin } from "@/handlers/comet-proxy-admin-handler";
 
 const HANDLER_NAME = "address-verification-handler";
 
@@ -125,6 +126,10 @@ export const addressVerificationHandler: Handler = {
     // Check if address is NOT in known addresses
     const knownAddresses = loadKnownAddresses(ctx.chainId);
     const targetCS = checksum(ctx.target);
+
+    // A CometProxyAdmin is absent from roots.json but can be confirmed on-chain
+    // as the admin of the proxies it upgrades; don't warn about those.
+    if (isVerifiedProxyAdmin(ctx.chainId, targetCS)) return false;
 
     // Only warn if address is unknown
     return !knownAddresses.has(targetCS);

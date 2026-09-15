@@ -18,10 +18,21 @@ import type {
     BackendInitOptions,
 } from "./types";
 import { getForkUrl } from "../config";
+import { EIP7825_TX_GAS_CAP } from "../core/constants";
 
 const BASE_PORT = 8545;
 const STARTUP_TIMEOUT_MS = 30000;
 const STARTUP_POLL_INTERVAL_MS = 100;
+const MINE_CHUNK_SIZE = 2000;
+
+/**
+ * Chains on which we enforce the EIP-7825 per-transaction gas cap at the node level.
+ *
+ * EIP-7825 is an Ethereum rule. Arbitrum, Polygon and Mantle have their own gas models
+ * with much higher per-transaction allowances, and the OP-stack chains only inherit it
+ * as they adopt the hardfork - enforcing it there would manufacture false failures.
+ */
+const TX_GAS_CAP_CHAINS = new Set(["mainnet"]);
 
 interface AnvilProcess {
     process: ChildProcess;
@@ -111,7 +122,16 @@ export class AnvilBackend implements Backend {
             "--no-mining", // We control mining explicitly
             "--silent", // Reduce noise
             "--block-base-fee-per-gas", "0", // Allow zero gas price for simulations
+            "--disable-block-gas-limit", // defaults.gas is deliberately huge (Tenderly-style); don't cap it
         ];
+
+        // Enforce the EIP-7825 per-transaction gas cap on mainnet, so a proposal that
+        // cannot be executed in a single mainnet transaction fails here too. Anvil only
+        // applies the check when explicitly enabled.
+        if (TX_GAS_CAP_CHAINS.has(chain)) {
+            args.push("--hardfork", "osaka");
+            args.push("--enable-tx-gas-limit");
+        }
 
         // Add fork block if specified (allows forking from historical state)
         const forkBlock = this.forkBlocks[chain];
@@ -190,8 +210,14 @@ export class AnvilBackend implements Backend {
             const currentBlock = await provider.getBlockNumber();
             const blocksToMine = options.blockNumber - currentBlock;
             if (blocksToMine > 0) {
-                // anvil_mine(numBlocks, interval) - interval 0 means same timestamp for all blocks
-                await provider.send("anvil_mine", [blocksToMine, 0]);
+                // anvil_mine(numBlocks, interval) - interval 0 means same timestamp for all blocks.
+                // Mine in chunks: a single ~20k-block call exceeds the JSON-RPC request timeout.
+                let remaining = blocksToMine;
+                while (remaining > 0) {
+                    const chunk = Math.min(remaining, MINE_CHUNK_SIZE);
+                    await provider.send("anvil_mine", [chunk, 0]);
+                    remaining -= chunk;
+                }
                 return;
             }
         }
@@ -233,6 +259,22 @@ export class AnvilBackend implements Backend {
         }
     }
 
+    /**
+     * Clamp a requested gas limit to the EIP-7825 cap on chains where it is enforced.
+     *
+     * Callers pass `defaults.gas` (deliberately huge, Tenderly-style) for most
+     * transactions. With `--enable-tx-gas-limit` the node rejects those outright, so
+     * clamp to the largest limit mainnet would accept. This is faithful rather than
+     * permissive: the cap IS the maximum a real sender could supply, and a transaction
+     * that then runs out of gas is genuinely unexecutable on mainnet.
+     */
+    private capGasLimit(chain: string, gas: string | undefined): string | undefined {
+        if (gas === undefined || !TX_GAS_CAP_CHAINS.has(chain)) return gas;
+        return BigInt(gas) > BigInt(EIP7825_TX_GAS_CAP)
+            ? "0x" + EIP7825_TX_GAS_CAP.toString(16)
+            : gas;
+    }
+
     async simulateBundle(chain: string, transactions: TransactionParams[]): Promise<BundleTransactionResult[]> {
         const provider = this.getProvider(chain);
 
@@ -251,7 +293,7 @@ export class AnvilBackend implements Backend {
                     const txHash = await provider.send("eth_sendTransaction", [{
                         from: tx.from,
                         to: tx.to,
-                        gas: tx.gas,
+                        gas: this.capGasLimit(chain, tx.gas),
                         gasPrice: tx.gasPrice,
                         value: tx.value ?? "0x0",
                         data: tx.data,
@@ -310,7 +352,7 @@ export class AnvilBackend implements Backend {
         const txHash = await provider.send("eth_sendTransaction", [{
             from: tx.from,
             to: tx.to,
-            gas: tx.gas,
+            gas: this.capGasLimit(chain, tx.gas),
             gasPrice: tx.gasPrice,
             value: tx.value ?? "0x0",
             data: tx.data,

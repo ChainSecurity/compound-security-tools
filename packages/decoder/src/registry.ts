@@ -3,6 +3,21 @@ import { checksum } from "@/utils";
 import type { CallEdge, CallInsight, DecoderOptions } from "@/types";
 import { logger } from "@/logger";
 
+/**
+ * The batch of calls this call belongs to (the proposal's action list, or the
+ * action list carried inside a bridged payload), plus this call's position in it.
+ *
+ * Handlers read live chain state, but a proposal executes its actions atomically
+ * and in order, so an earlier action may rewrite the very state a later action's
+ * insight reports. `siblings` lets a handler describe execution-time state
+ * instead of pre-proposal state. See `lib/proposal-siblings.ts`.
+ */
+export type SiblingCalls = {
+  /** Position of the current call within `calls`. */
+  index: number;
+  calls: Array<{ chainId: number; target: string; rawCalldata: string }>;
+};
+
 /** What your action-level decoder passes into the registry */
 export type RegistryCtx = {
   // where this call executes
@@ -24,6 +39,10 @@ export type RegistryCtx = {
       }
     | undefined;
 
+  // sibling calls in the same batch, so handlers can account for changes staged
+  // by actions that execute before this one
+  siblings?: SiblingCalls | undefined;
+
   // decoder options (for source tracking, etc.)
   options?: DecoderOptions;
 };
@@ -36,6 +55,10 @@ export type ChildRequest = {
     target: string;
     valueWei?: bigint; // default 0n
     rawCalldata: string;
+    // Canonical function signature (e.g. "setFactory(address,address)") when known
+    // from the call data itself (e.g. Compound governance batches embed it). Used as a
+    // fallback so inner calls decode even when the target ABI can't be fetched.
+    sigHint?: string;
   };
 };
 
@@ -93,9 +116,29 @@ export class Registry {
           insightsOut.push(...insights);
         }
       } catch (err) {
-        // Swallow handler errors; parent decoder can surface a note if desired.
-        // You could also push a synthetic note via a special edge.type === "other".
+        // A handler that throws (transient RPC failure, undecodable calldata, ...)
+        // silently drops whatever verification it was going to report. In a review
+        // tool a missing check must never look like a passing check, so surface it
+        // as an insight instead of only logging it.
         logger.warn({ handler: h.name, err }, "Handler failed");
+        insightsOut.push(
+          insight({
+            title: "⚠️ Handler Error",
+            entries: [
+              { label: "Handler", value: h.name },
+              { label: "Target", value: checksum(ctx.target) },
+              {
+                label: "Error",
+                value: err instanceof Error ? err.message : String(err),
+              },
+              {
+                label: "Impact",
+                value:
+                  "This handler's checks did NOT run for this call. Re-run the decoder (transient RPC errors are the usual cause) before relying on the output.",
+              },
+            ],
+          })
+        );
         continue;
       }
     }
@@ -131,7 +174,7 @@ export const selectorOfSig = (sig: string) => id(sig).slice(0, 10);
 /** Quick utility for building a minimal decode result for a child */
 export function child(
   edge: CallEdge,
-  opts: { chainId: number; target: string; rawCalldata: string; valueWei?: bigint }
+  opts: { chainId: number; target: string; rawCalldata: string; valueWei?: bigint; sigHint?: string }
 ): ChildRequest {
   return {
     edge,
@@ -140,6 +183,7 @@ export function child(
       target: checksum(opts.target),
       rawCalldata: opts.rawCalldata,
       valueWei: opts.valueWei ?? 0n,
+      sigHint: opts.sigHint,
     },
   };
 }

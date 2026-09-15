@@ -307,15 +307,34 @@ async function findViaLinea(
 function findViaPayload(
   action: CrossChainAction,
   events: ProposalCreatedEvent[],
+  l1ExecTimestamp?: number,
 ): ProposalCreatedEvent | null {
-  return (
-    events.find(
-      (ev) =>
-        targetsMatch(action.innerTargets, ev.targets) &&
-        valuesMatch(action.innerValues, ev.values) &&
-        calldatasMatch(action.innerCalldatas, ev.calldatas),
-    ) ?? null
+  const matches = events.filter(
+    (ev) =>
+      targetsMatch(action.innerTargets, ev.targets) &&
+      valuesMatch(action.innerValues, ev.values) &&
+      calldatasMatch(action.innerCalldatas, ev.calldatas),
   );
+  if (matches.length <= 1) return matches[0] ?? null;
+
+  // Multiple L2 proposals share this exact payload — typically because the same
+  // proposal was re-submitted on mainnet after an earlier attempt expired. Picking
+  // the first match (the oldest) silently mis-attributes a stale duplicate, so we
+  // disambiguate using the L1 execution time: the L2 proposal produced by THIS
+  // execution must have been created after it, and its eta (creation + bridge delay)
+  // is therefore strictly later. The earliest qualifying match is the right one.
+  if (l1ExecTimestamp !== undefined) {
+    const after = matches
+      .filter((ev) => ev.eta >= l1ExecTimestamp)
+      .sort((a, b) => a.eta - b.eta);
+    // If nothing post-dates the execution, the bridge message hasn't produced an
+    // L2 proposal yet; return null (→ "not-transmitted") rather than a stale match.
+    return after[0] ?? null;
+  }
+
+  // L1 execution time unavailable: prefer the most recent match over the oldest,
+  // since stale duplicates from earlier proposals are created earlier.
+  return matches.reduce((latest, ev) => (ev.eta > latest.eta ? ev : latest));
 }
 
 function targetsMatch(expected: string[], actual: string[]): boolean {
@@ -362,6 +381,7 @@ async function processChain(
   actions: CrossChainAction[],
   l1Provider: JsonRpcProvider,
   executionTxHash: string | undefined,
+  l1ExecTimestamp: number | undefined,
 ): Promise<CrossChainActionResult[]> {
   const rpcUrl = getRpcUrl(chainName);
   if (!rpcUrl) {
@@ -406,7 +426,7 @@ async function processChain(
     // 2. Payload fallback: targets + values + calldatas
     if (!match) {
       const events = await getEvents();
-      match = findViaPayload(action, events);
+      match = findViaPayload(action, events, l1ExecTimestamp);
     }
 
     if (!match) {
@@ -452,6 +472,25 @@ async function processChain(
 
 // ── Public API ─────────────────────────────────────────────────────
 
+/**
+ * Resolve the block timestamp (in seconds) of the L1 execution transaction.
+ * Returns undefined if no tx hash is given or the receipt/block can't be fetched.
+ */
+async function getL1ExecutionTimestamp(
+  l1Provider: JsonRpcProvider,
+  executionTxHash: string | undefined,
+): Promise<number | undefined> {
+  if (!executionTxHash) return undefined;
+  try {
+    const receipt = await l1Provider.getTransactionReceipt(executionTxHash);
+    if (!receipt) return undefined;
+    const block = await l1Provider.getBlock(receipt.blockNumber);
+    return block?.timestamp;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function checkL2StatusBatch(
   actions: CrossChainAction[],
   l1Provider: JsonRpcProvider,
@@ -464,9 +503,13 @@ export async function checkL2StatusBatch(
     byChain.set(action.chainName, group);
   }
 
+  // Resolve the L1 execution block timestamp once — used to disambiguate L2
+  // proposals that share an identical payload (re-submitted proposals).
+  const l1ExecTimestamp = await getL1ExecutionTimestamp(l1Provider, executionTxHash);
+
   const chainResults = await Promise.allSettled(
     Array.from(byChain.entries()).map(([chainName, chainActions]) =>
-      processChain(chainName, chainActions, l1Provider, executionTxHash),
+      processChain(chainName, chainActions, l1Provider, executionTxHash, l1ExecTimestamp),
     ),
   );
 

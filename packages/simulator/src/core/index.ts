@@ -10,7 +10,21 @@ export type { Logger, SimulationContext, GovernanceSimulationResult } from "./ty
 export { nullLogger } from "./types";
 
 // Constants
-export { TUPLE_TYPES, bridgeABIs, messageIndex, GAS_LIMIT, CCIP_ROUTER, CCIP_CHAIN_SELECTORS } from "./constants";
+export {
+    TUPLE_TYPES,
+    bridgeABIs,
+    messageIndex,
+    GAS_LIMIT,
+    EIP7825_TX_GAS_CAP,
+    TX_GAS_LIMIT_BUFFER,
+    MAX_MAINNET_TX_GAS,
+    CCIP_ROUTER,
+    CCIP_CHAIN_SELECTORS,
+} from "./constants";
+
+// Gas limit checks (EIP-7825)
+export { checkTxGasCap, describeGasFailure, toGasHex } from "./gas";
+export type { GasCapCheck, GasTxRequest } from "./gas";
 
 // Proposal functions
 export {
@@ -38,3 +52,6 @@ export {
     runDirectWithL2,
     submitProposalFromCalldata,
 } from "./simulation";
+
+// L2→L1 relay
+export { simulateL2ToL1Messages } from "./l2-to-l1";

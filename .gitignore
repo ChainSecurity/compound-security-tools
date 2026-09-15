@@ -54,3 +54,5 @@ coverage
 
 # Misc
 .cache
+
+.claude/settings.local.json

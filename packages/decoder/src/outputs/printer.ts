@@ -163,6 +163,22 @@ function formatUintValue(value: unknown): string {
   return `${hex} (int: ${dec}; /1e18: ${dec18})`;
 }
 
+/**
+ * bytes32 arguments are often a left-aligned, NUL-padded ASCII tag (TimelockController
+ * salts, role identifiers, market names). Show the text alongside the hex so a reviewer
+ * does not have to decode it by hand.
+ */
+function bytes32Ascii(value: unknown): string | null {
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value)) return null;
+  const bytes = Buffer.from(value.slice(2), "hex");
+  const nul = bytes.indexOf(0);
+  const head = nul === -1 ? bytes : bytes.subarray(0, nul);
+  if (head.length < 3) return null;
+  if (bytes.subarray(head.length).some((b) => b !== 0)) return null;
+  if (head.some((b) => b < 0x20 || b > 0x7e)) return null;
+  return head.toString("ascii");
+}
+
 function stringifyWithBigInt(value: unknown): string {
   try {
     return JSON.stringify(value, (_, v) => (typeof v === "bigint" ? v.toString() : v));
@@ -192,6 +208,11 @@ function formatValueForDisplay(
 
   if (isUintType(param)) {
     return formatUintValue(value);
+  }
+
+  if (param.type === "bytes32") {
+    const ascii = bytes32Ascii(value);
+    if (ascii) return `${String(value)} (ascii: "${ascii}")`;
   }
 
   if (typeof value === "bigint") return value.toString();

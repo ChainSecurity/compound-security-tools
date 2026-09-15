@@ -21,7 +21,8 @@ import type {
     TransactionExecution,
 } from "../types";
 import type { SimulationContext, GovernanceSimulationResult } from "./types";
-import { bridgeABIs, messageIndex, CCIP_ROUTER } from "./constants";
+import { bridgeABIs, messageIndex, CCIP_ROUTER, MAX_MAINNET_TX_GAS } from "./constants";
+import { checkTxGasCap, describeGasFailure, toGasHex } from "./gas";
 import {
     getProposal,
     extractBridgedProposal,
@@ -30,6 +31,7 @@ import {
     isCCIPTarget,
     ccipTargetToL2Chain,
 } from "./proposals";
+import { simulateL2ToL1Messages } from "./l2-to-l1";
 
 const config = loadConfig();
 
@@ -99,13 +101,23 @@ async function submitProposal(
         `Simulation of proposal ${originalProposalId} at ${Date.now()}`
     );
 
-    await backend.sendTransaction(chain, {
+    const proposeTxHash = await backend.sendTransaction(chain, {
         from: robinhood,
         to: chainConfig.governorAddress!,
         gas: config.defaults.gas,
         gasPrice: config.defaults.gasPrice,
         data: proposeTx.data!,
     });
+
+    // Fail loudly if propose reverted: nextProposalId was read before sending, so
+    // without this check the simulation carries on with an ID that does not exist and
+    // fails later with a confusing GovernorNonexistentProposal.
+    const proposeReceipt = await provider.waitForTransaction(proposeTxHash);
+    if (proposeReceipt?.status === 0) {
+        const reason = await getRevertReason(provider, proposeTxHash);
+        logger.error(`Propose transaction reverted: ${reason ?? "unknown reason"}`);
+        throw new Error(`Failed to submit proposal for simulation: ${reason ?? "propose reverted"}`);
+    }
 
     // Mine a block to finalize the proposal
     await backend.mineBlock(chain);
@@ -244,10 +256,21 @@ async function advanceAndExecute(
     // Execute proposal
     logger.step("Executing proposal");
     const executeTx = await governor.execute.populateTransaction(proposalId);
-    const executeResult = await backend.sendTransaction(chain, {
+    const executeRequest = {
         from: robinhood,
         to: chainConfig.governorAddress!,
         data: executeTx.data!,
+    };
+
+    // Check the minimum viable gas limit against the EIP-7825 cap before executing,
+    // so an over-cap proposal is reported as such rather than as an opaque OOG.
+    const gasCheck = await checkTxGasCap(provider, executeRequest, logger);
+
+    // Execute with (cap - buffer), never an auto-estimated or unbounded limit: mainnet
+    // would reject anything above the cap, so simulating with more hides the failure.
+    const executeResult = await backend.sendTransaction(chain, {
+        ...executeRequest,
+        gas: toGasHex(MAX_MAINNET_TX_GAS),
     });
     logger.done("Execution complete");
     logger.tx("Execute proposal", executeResult);
@@ -259,7 +282,11 @@ async function advanceAndExecute(
     // Extract revert reason if transaction failed
     let revertReason: string | undefined;
     if (!success && executeResult) {
-        revertReason = await getRevertReason(provider, executeResult);
+        // An over-cap proposal fails as out-of-gas, which carries no revert data;
+        // report the gas requirement instead of an empty reason.
+        revertReason =
+            describeGasFailure(gasCheck, MAX_MAINNET_TX_GAS) ??
+            await getRevertReason(provider, executeResult);
     }
 
     return {
@@ -405,6 +432,12 @@ export async function simulateBridging(
         if (l2) {
             const result = await simulateL2(l2, calldata, ctx);
             results.push(result);
+
+            // Relay any messages the L2 execution sent back to L1
+            if (result.success && result.executions[0]?.txHash) {
+                const relayResults = await simulateL2ToL1Messages(l2, result.executions[0].txHash, ctx);
+                results.push(...relayResults);
+            }
             continue;
         }
 
@@ -536,6 +569,7 @@ export async function simulateL2(
             from: alias,
             to: alias, // claimMessage is called on the L2MessageService itself
             data: claimCalldata,
+            gasPrice: config.defaults.gasPrice,
         });
     } else if (chain === "polygon") {
         // Polygon uses FxPortal: FxChild calls processMessageFromRoot on the receiver
@@ -552,12 +586,14 @@ export async function simulateL2(
             from: alias,
             to: chainConfig.receiver!,
             data: encodedCall,
+            gasPrice: config.defaults.gasPrice,
         });
     } else {
         await backend.sendTransaction(chain, {
             from: alias,
             to: chainConfig.receiver!,
             data: message,
+            gasPrice: config.defaults.gasPrice,
         });
     }
 
@@ -578,6 +614,7 @@ export async function simulateL2(
         from: alias,
         to: chainConfig.receiver!,
         data: executeTx.data!,
+        gasPrice: config.defaults.gasPrice,
     });
     logger.done("Execution complete");
     logger.tx("Execute proposal", executeResult);
@@ -683,6 +720,7 @@ export async function simulateCCIPL2(
         from: l2Router,
         to: receiverAddress,
         data: ccipReceiveTx,
+        gasPrice: config.defaults.gasPrice,
     });
 
     // Use the standard receiver ABI for executeProposal / localTimelock
@@ -707,6 +745,7 @@ export async function simulateCCIPL2(
         from: l2Router,
         to: receiverAddress,
         data: executeTx.data!,
+        gasPrice: config.defaults.gasPrice,
     });
     logger.done("Execution complete");
     logger.tx("Execute proposal", executeResult);

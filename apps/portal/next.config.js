@@ -1,6 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
+  // Dev-only: allow loading the dev server from the VM's LAN address, not just localhost.
+  // Without this, Next 15 blocks dev-internal requests (HMR, /__nextjs_*) from a non-local
+  // origin, which surfaces in the browser as "Failed to fetch".
+  allowedDevOrigins: ["192.168.249.16", "192.168.249.*"],
   transpilePackages: ["@compound-security/decoder", "@compound-security/simulator"],
   serverExternalPackages: [
     "pino",

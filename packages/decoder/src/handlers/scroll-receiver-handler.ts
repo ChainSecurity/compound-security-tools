@@ -72,6 +72,7 @@ export const scrollBridgeReceiverHandler: Handler = {
             target,
             valueWei,
             rawCalldata,
+            sigHint: sig && sig.length > 0 ? sig : undefined,
           }
         )
       );

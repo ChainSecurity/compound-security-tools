@@ -87,6 +87,13 @@ export function getCometMetadata(chainId: number, cometAddress: string): CometMe
   return chainMeta.byComet.get(checksum(cometAddress)) ?? null;
 }
 
+/** Every market the vendored deployments describe for `chainId`. */
+export function listCometMetadata(chainId: number): CometMetadata[] {
+  const chainMeta = ensureChainMetadata(chainId);
+  if (!chainMeta) return [];
+  return [...chainMeta.byComet.values()];
+}
+
 function ensureChainMetadata(chainId: number): ChainMetadata | null {
   if (chainCache.has(chainId)) return chainCache.get(chainId)!;
 
@@ -267,7 +274,14 @@ export function getCometContractLabel(
     }
   }
 
-  // Fall back to searching all markets
+  // Fall back to searching all markets. A Configurator is shared by every market
+  // on the chain, so naming the first market that happens to match would claim a
+  // market this call has nothing to do with — label it neutrally instead.
+  const sharesConfigurator = [...chainMeta.byComet.values()].filter(
+    (m) => m.configuratorAddress === addrCS
+  );
+  if (sharesConfigurator.length > 1) return "Configurator (shared by all markets)";
+
   for (const cometMeta of chainMeta.byComet.values()) {
     const label = getLabelFromMetadata(cometMeta, addrCS);
     if (label) return label;
